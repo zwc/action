@@ -1,20 +1,9 @@
-name: CI/CD Pipeline
-
-permissions:
-  contents: read
-  id-token: write
-  pull-requests: write
+name: Run Tests
 
 on:
-  workflow_call:
-    inputs:
-      environment:
-        required: false
-        type: string
-      bun-version:           # ⬅︎ replace node-version with bun-version
-        required: false      #   bun can default to “latest” if you don’t pass it
-        type: string
-        default: "latest"
+  push:
+    branches:
+      - main
 
 jobs:
   test:
