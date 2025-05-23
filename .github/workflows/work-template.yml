@@ -1,0 +1,175 @@
+name: CI/CD Pipeline
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: false
+        type: string
+      node-version:
+        required: true
+        type: string
+      aws-account-id-dev:
+        required: false
+        type: string
+      aws-account-id-test:
+        required: false
+        type: string
+      aws-account-id-prod:
+        required: false
+        type: string
+      application-service:
+        required: false
+        type: string
+      team-name:
+        required: false
+        type: string
+      slack-channel:
+        required: false
+        type: string
+    secrets:
+      MICROCHANGE_HOOK_PROD:
+        required: true
+      NPM_TOKEN:
+        required: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - id: install-deps
+        uses: postnord-group/cs-aws-serverless-workflow/.github/actions/install@main
+        with:
+          node-version: ${{ inputs.node-version }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Lint
+        run: npm run lint
+      - name: Run tests
+        run: npm test
+
+  deploy-dev:
+    if: inputs.aws-account-id-dev != '' && github.event_name == 'workflow_dispatch' && inputs.environment == 'dev'
+    needs: test
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: deploy-${{ github.repository }}-dev
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        uses: postnord-group/cs-aws-serverless-workflow/.github/actions/install@main
+        with:
+          node-version: ${{ inputs.node-version }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          audience: sts.amazonaws.com
+          aws-region: eu-west-1
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id-dev }}:role/GHOIDC-${{ github.event.repository.name }}
+      - name: Deploy to Dev
+        run: npm run deploy:dev
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  deploy-test:
+    if: inputs.aws-account-id-test != '' && ((github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.environment == 'test'))
+    needs: test
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: deploy-${{ github.repository }}-stage
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        uses: postnord-group/cs-aws-serverless-workflow/.github/actions/install@main
+        with:
+          node-version: ${{ inputs.node-version }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Configure AWS Credentials
+        if: inputs.aws-account-id-test != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          audience: sts.amazonaws.com
+          aws-region: eu-west-1
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id-test }}:role/GHOIDC-${{ github.event.repository.name }}
+      - name: Deploy to Test
+        run: npm run deploy:test
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  report-test:
+    runs-on: ubuntu-latest
+    needs: deploy-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Microchange Notification
+        uses: postnord-group/sysops-microchange-notification@v1
+        with:
+          deploy-url: ${{ secrets.MICROCHANGE_HOOK_PROD }}
+          application-service: ${{ inputs.application-service }}
+          team-name: ${{ inputs.team-name }}
+          environment-name: 'at'
+          slack-channel: ${{ inputs.slack-channel }}
+
+  report-prod:
+    runs-on: ubuntu-latest
+    needs: deploy-prod
+    steps:
+      - uses: actions/checkout@v4
+      - name: Microchange Notification
+        uses: postnord-group/sysops-microchange-notification@v1
+        with:
+          deploy-url: ${{ secrets.MICROCHANGE_HOOK_PROD }}
+          application-service: ${{ inputs.application-service }}
+          team-name: ${{ inputs.team-name }}
+          environment-name: 'production'
+          slack-channel: ${{ inputs.slack-channel }}
+
+  deploy-prod:
+    if: github.ref == 'refs/heads/main'
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-${{ github.repository }}-prod
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        uses: postnord-group/cs-aws-serverless-workflow/.github/actions/install@main
+        with:
+          node-version: ${{ inputs.node-version }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Configure AWS Credentials
+        if: inputs.aws-account-id-prod != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          audience: sts.amazonaws.com
+          aws-region: eu-west-1
+          role-to-assume: arn:aws:iam::${{ inputs.aws-account-id-prod }}:role/GHOIDC-${{ github.event.repository.name }}
+      - name: Deploy to Prod
+        run: npm run deploy:prod
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
